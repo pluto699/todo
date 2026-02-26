@@ -1,0 +1,156 @@
+{% extends 'document.tmpl' %}
+
+{% block content %}
+
+{%- set set_class_name = type.name | format_class_name -%}
+{%- set underlying_type = type.encoding_type.name | replace_keyword -%}
+
+class {{ set_class_name }} {
+private:
+    char* buffer_ = nullptr;
+    std::size_t bufferLength_ = 0;
+    std::size_t offset_ = 0;
+    std::uint16_t actingVersion_ = 0;
+
+public:
+    {{ set_class_name }}() = default;
+
+    {{ set_class_name }}(char* buffer, std::size_t offset, std::size_t bufferLength, std::uint16_t actingVersion)
+        : buffer_{buffer}
+        , bufferLength_{bufferLength}
+        , offset_{offset}
+        , actingVersion_{actingVersion}
+    {
+        if ((offset_ + {{ type.encoding_type.size }}) > bufferLength_) [[unlikely]] {
+            throw std::runtime_error("buffer too short for flyweight [E107]");
+        }
+    }
+
+    {{ set_class_name }}(char* buffer, std::size_t bufferLength, std::uint16_t actingVersion)
+        : {{ set_class_name }}{buffer, 0, bufferLength, actingVersion}
+    {}
+
+    {{ set_class_name }}(char* buffer, std::size_t bufferLength)
+        : {{ set_class_name }}{buffer, 0, bufferLength, sbeSchemaVersion()}
+    {}
+
+    {{ set_class_name }}& wrap(char* buffer, std::size_t offset, std::uint16_t actingVersion, std::size_t bufferLength)
+    {
+        return *this = {{ set_class_name }}{buffer, offset, bufferLength, actingVersion};
+    }
+
+    [[nodiscard]] static constexpr auto encodedLength() noexcept -> std::size_t
+    {
+        return {{ type.encoding_type.size }};
+    }
+
+    [[nodiscard]] auto offset() const noexcept -> std::size_t
+    {
+        return offset_;
+    }
+
+    [[nodiscard]] auto buffer() const noexcept -> char const*
+    {
+        return buffer_;
+    }
+
+    [[nodiscard]] auto buffer() noexcept -> char*
+    {
+        return buffer_;
+    }
+
+    [[nodiscard]] auto bufferLength() const noexcept -> std::size_t
+    {
+        return bufferLength_;
+    }
+
+    [[nodiscard]] auto actingVersion() const noexcept -> std::uint16_t
+    {
+        return actingVersion_;
+    }
+
+    [[nodiscard]] static constexpr auto sbeSchemaId() noexcept -> std::uint16_t
+    {
+        return {{ schema.id }};
+    }
+
+    [[nodiscard]] static constexpr auto sbeSchemaVersion() noexcept -> std::uint16_t
+    {
+        return {{ schema.version }};
+    }
+
+    {{ set_class_name }}& clear() noexcept
+    {
+        {{ underlying_type }} value{0};
+        std::memcpy(buffer_ + offset_, &zero, sizeof(value));
+        return *this;
+    }
+
+    [[nodiscard]] auto isEmpty() const noexcept -> bool
+    {
+        {{ underlying_type }} value;
+        std::memcpy(&value, buffer_ + offset_, sizeof(value));
+        return 0 == value;
+    }
+
+    [[nodiscard]] auto rawValue() const noexcept -> {{ underlying_type }}
+    {
+        {{ underlying_type }} value;
+        std::memcpy(&value, buffer_ + offset_, sizeof(value));
+        return value;
+    }
+
+    {{ set_class_name }}& rawValue({{ underlying_type }} value) noexcept
+    {
+        std::memcpy(buffer_ + offset_, &value, sizeof(value));
+        return *this;
+    }
+
+{% for choice in type.choices %}
+    {% set method_name = choice.name | format_method_name_prefix %}
+    [[nodiscard]] static constexpr auto {{ method_name }}({{ underlying_type }} bits) noexcept -> bool
+    {
+        return (bits & (static_cast<{{ underlying_type }}>(1) << {{ choice.value }}u)) != 0;
+    }
+
+    [[nodiscard]] static constexpr auto {{ method_name }}({{ underlying_type }} bits, bool value) noexcept -> {{ underlying_type }}
+    {
+        return value ? (bits | (static_cast<{{ underlying_type }}>(1) << {{ choice.value }}u)) : (bits & ~(static_cast<{{ underlying_type }}>(1) << {{ choice.value }}u));
+    }
+
+    {{ set_class_name}}& {{ method_name }}(bool value) noexcept
+    {
+        {{ underlying_type }} bits;
+        std::memcpy(buffer_ + offset_, &bits, sizeof(bits));
+        bits = {{ method_name }}(bits, value);
+        std::memcpy(&bits, buffer_ + offset_, sizeof(bits));
+        return *this;
+    }
+
+{% endfor %}
+
+    template<typename CharT, typename Traits>
+    friend std::basic_ostream<CharT, Traits>& operator<<(std::basic_ostream<CharT, Traits>& os, {{ set_class_name }} m)
+    {
+        os << '[';
+        bool atLeastOne{false};
+{% for choice in type.choices %}
+    {% set method_name = choice.name | format_method_name_prefix %}
+        if (m.{{ method_name }}())
+        {
+    {% if not loop.first %}
+            if (atLeastOne)
+            {
+                os << ",";
+            }
+    {% endif %}
+            os << R"("{{ choice.name }}")";
+            atLeastOne = true;
+        }
+{% endfor %}
+        os << ']';
+        return os;
+    }
+};
+
+{% endblock -%}
