@@ -1,0 +1,748 @@
+{% set version_check = true %}
+
+{#
+    generateFixedFlyweightCode(...)
+#}
+
+{% macro fixedFlyweightCode(c_name, entry) %}
+private:
+    char *m_buffer = nullptr;
+    std::uint64_t m_bufferLength = 0;
+    std::uint64_t m_offset = 0;
+    {# TODO: schema.utils.version.primitive_type.name should be used? #}
+    std::uint64_t m_actingVersion = 0;
+
+public:
+    enum MetaAttribute
+    {
+        EPOCH, TIME_UNIT, SEMANTIC_TYPE, PRESENCE
+    };
+
+    union sbe_float_as_uint_u
+    {
+        float fp_value;
+        std::uint32_t uint_value;
+    };
+
+    union sbe_double_as_uint_u
+    {
+        double fp_value;
+        std::uint64_t uint_value;
+    };
+
+    {{ c_name }}() = default;
+
+    {{ c_name }}(
+        char *buffer,
+        const std::uint64_t offset,
+        const std::uint64_t bufferLength,
+        const std::uint64_t actingVersion) :
+        m_buffer(buffer),
+        m_bufferLength(bufferLength),
+        m_offset(offset),
+        m_actingVersion(actingVersion)
+    {
+        if (SBE_BOUNDS_CHECK_EXPECT(((m_offset + {{ entry.encoded_length }}) > m_bufferLength), false))
+        {
+            throw std::runtime_error("buffer too short for flyweight [E107]");
+        }
+    }
+
+    {{ c_name }}(
+        char *buffer,
+        const std::uint64_t bufferLength,
+        const std::uint64_t actingVersion) :
+        {{ c_name }}(buffer, 0, bufferLength, actingVersion)
+    {
+    }
+
+    {{ c_name }}(
+        char *buffer,
+        const std::uint64_t bufferLength) :
+        {{ c_name }}(buffer, 0, bufferLength, sbeSchemaVersion())
+    {
+    }
+
+    {{ c_name }} &wrap(
+        char *buffer,
+        const std::uint64_t offset,
+        const std::uint64_t actingVersion,
+        const std::uint64_t bufferLength)
+    {
+        m_buffer = buffer;
+        m_bufferLength = bufferLength;
+        m_offset = offset;
+        m_actingVersion = actingVersion;
+
+        if (SBE_BOUNDS_CHECK_EXPECT(((m_offset + {{ entry.encoded_length }}) > m_bufferLength), false))
+        {
+            throw std::runtime_error("buffer too short for flyweight [E107]");
+        }
+
+        return *this;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t encodedLength() SBE_NOEXCEPT
+    {
+        return {{ entry.encoded_length }};
+    }
+
+    SBE_NODISCARD std::uint64_t offset() const SBE_NOEXCEPT
+    {
+        return m_offset;
+    }
+
+    SBE_NODISCARD const char *buffer() const SBE_NOEXCEPT
+    {
+        return m_buffer;
+    }
+
+    SBE_NODISCARD char *buffer() SBE_NOEXCEPT
+    {
+        return m_buffer;
+    }
+
+    SBE_NODISCARD std::uint64_t bufferLength() const SBE_NOEXCEPT
+    {
+        return m_bufferLength;
+    }
+
+    SBE_NODISCARD std::uint64_t actingVersion() const SBE_NOEXCEPT
+    {
+        return m_actingVersion;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaId() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint16_t>({{ schema.id }});
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaVersion() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint16_t>({{ schema.version }});
+    }
+{%- endmacro %}
+
+
+{#
+    formatByteOrderEncoding(...)
+#}
+
+{% macro formatByteOrderEncoding(type) -%}
+    {% if schema.byte_order == 'littleEndian' %}
+        {% set byte_order = 'LITTLE_ENDIAN' %}
+    {% elif schema.byte_order == 'bigEndian' %}
+        {% set byte_order = 'BIG_ENDIAN' %}
+    {% endif %}
+    {%- if type.size == 2 %}
+SBE_{{ byte_order }}_ENCODE_16
+    {%- elif type.size == 4 %}
+SBE_{{ byte_order }}_ENCODE_32
+    {%- elif type.size == 8 %}
+SBE_{{ byte_order }}_ENCODE_64
+    {%- endif %}
+{%- endmacro %}
+
+{#
+    generateCompositePropertyElements(...)
+#}
+
+{% macro compositePropertyElements(c_name, contained_types) %}
+    {% for entry in contained_types %}
+        {% set m_name = entry.reference_name if 'reference_name' in entry else entry.name %}
+    // {{ m_name }}
+{# generateFieldMetaAttributeMethod(...) #}
+{{ fieldMetaAttributeMethod(c_name, m_name, entry) }}
+{# generateFieldCommonMethods(...) #}
+{{ fieldCommonMethods(c_name, m_name, entry) }}
+        {% if entry.token == 'type' %}
+
+{# generatePrimitiveProperty(...) #}
+{{ primitiveProperty(c_name, m_name, entry) }}
+        {%- elif entry.token == 'enum' %}
+
+{# generateEnumProperty(...) #}
+{{ enumProperty(c_name, m_name, entry) }}
+        {%- elif entry.token == 'set' %}
+
+{# generateBitsetProperty(...) #}
+{{ bitsetProperty(c_name, m_name, entry) }}
+        {%- elif entry.token == 'composite' %}
+
+{# generateCompositeProperty(...) #}
+{{ compositeProperty(c_name, m_name, entry) }}
+        {%- endif %}
+
+    {%- endfor %}
+
+{# generateCompositeDisplay #}
+    template<typename CharT, typename Traits>
+    friend std::basic_ostream<CharT, Traits> & operator << (
+        std::basic_ostream<CharT, Traits> &builder, {{ c_name }} writer)
+    {
+        builder << '{';
+    {% for entry in contained_types %}
+        {% set m_name = entry.reference_name if 'reference_name' in entry else entry.name %}
+        {% if not loop.first %}
+        builder << ", ";
+        {% endif %}
+        builder << R"("{{ m_name | lower_first }}": )";
+        builder << writer.{{ m_name | lower_first }}();
+
+    {% endfor %}
+        builder << '}';
+
+        return builder;
+    }
+{%- endmacro %}
+
+{#
+    generateFieldMetaAttributeMethod(...)
+#}
+
+{% macro fieldMetaAttributeMethod(c_name, m_name, entry) %}
+{%- endmacro %}
+
+{#
+    generateFieldCommonMethods(...)
+#}
+
+{% macro fieldCommonMethods(c_name, m_name, entry) %}
+    static SBE_CONSTEXPR std::uint16_t {{ m_name | lower_first }}Id() SBE_NOEXCEPT
+    {
+        return {{ entry.id or -1 }};
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t {{ m_name | lower_first }}SinceVersion() SBE_NOEXCEPT
+    {
+        return {{ entry.since_version }};
+    }
+
+    SBE_NODISCARD bool {{ m_name | lower_first }}InActingVersion() SBE_NOEXCEPT
+    {
+    {% if version_check %}
+        return m_actingVersion >= {{ m_name | lower_first }}SinceVersion();
+    {% else %}
+        return true;
+    {% endif %}
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t {{ m_name | lower_first }}EncodingOffset() SBE_NOEXCEPT
+    {
+        return {{ entry.offset }};
+    }
+{%- endmacro %}
+
+
+{#
+    generatePrimitiveProperty(...)
+#}
+
+{% macro primitiveProperty(c_name, m_name, entry) %}
+{# generatePrimitiveFieldMetaData(...) #}
+{{ primitiveFieldMetaData(c_name, m_name, entry) }}
+    {% if entry.presence == 'constant' %}
+
+{# generateConstPropertyMethods(...) #}
+{{ constPropertyMethods(c_name, m_name, entry) }}
+    {% else %}
+
+{# generatePrimitivePropertyMethods(...) #}
+{{ primitivePropertyMethods(c_name, m_name, entry) }}
+    {% endif %}
+{%- endmacro %}
+
+{#
+    generateConstPropertyMethods(...)
+#}
+
+{% macro constPropertyMethods(c_name, m_name, entry) %}
+    {%- set type = entry.type if entry.token == 'field' else entry %}
+    {%- set cpp_t = type.primitive_type.name | replace_keyword %}
+    {% if type.primitive_type.name != 'char' %}
+    SBE_NODISCARD static SBE_CONSTEXPR {{ cpp_t }} {{ m_name | lower_first }}() SBE_NOEXCEPT
+    {
+        return {{ entry.const_value | replace_keyword }};
+    }
+    {% else %}
+    static SBE_CONSTEXPR std::uint64_t {{ m_name | lower_first }}Length() SBE_NOEXCEPT
+    {
+        return {{ type.length }};
+    }
+
+    SBE_NODISCARD const char *{{ m_name | lower_first }}() const
+    {
+        // TODO
+        return {{ entry.const_value }};
+    }
+
+    // TODO: cpp_t ?
+    SBE_NODISCARD {{ cpp_t }} {{ m_name | lower_first }}(const std::uint64_t index) const
+    {
+        // TODO
+        return {{ entry.const_value }}[index];
+    }
+
+    std::uint64_t get{{ m_name | upper_first }}(char* dst, const std::uint64_t length) const
+    {
+        // TODO
+        FIX_ME
+    }
+
+    std::string get{{ m_name | upper_first }}AsString() const
+    {
+        // TODO
+        return std::string();
+    }
+
+    {# generateJsonEscapedStringGetter #}
+    std::string get{{ m_name | upper_first }}AsJsonEscapedString()
+    {
+        std::ostringstream oss;
+        std::string = get{{ m_name | upper_first }}AsString();
+
+        for (const auto c : s)
+        {
+            switch (c)
+            {
+                case '"': oss << "\\\""; break;
+                case '\\': oss << "\\\\"; break;
+                case '\b': oss << "\\b"; break;
+                case '\f': oss << "\\f"; break;
+                case '\n': oss << "\\n"; break;
+                case '\r': oss << "\\r"; break;
+                case '\t': oss << "\\t"; break;
+
+                default:
+                    if ('\x00' <= c && c <= '\x1f')
+                    {
+                        oss << "\\u" << std::hex << std::setw(4)
+                            << std::setfill('0') << (int)(c);
+                    }
+                    else
+                    {
+                        oss << c;
+                    }
+            }
+        }
+
+        return oss.str();
+    }
+    {% endif %}
+{%- endmacro %}
+
+{#
+    generatePrimitivePropertyMethods(...)
+#}
+
+{% macro primitivePropertyMethods(c_name, m_name, entry) %}
+    {%- set type = entry.type if entry.token == 'field' else entry %}
+    {% if type.length == 1 %}
+{# generateSingleValueProperty(...) #}
+{{ singleValueProperty(c_name, m_name, entry) }}
+    {% elif type.length > 1 %}
+{# generateArrayProperty(...) #}
+{{ arrayProperty(c_name, m_name, entry) }}
+    {% endif %}
+{%- endmacro %}
+
+{#
+    generateSingleValueProperty(...)
+#}
+
+{% macro singleValueProperty(c_name, m_name, entry) %}
+    {%- set type = entry.type if entry.token == 'field' else entry %}
+    {%- set cpp_t = type.primitive_type.name | replace_keyword %}
+    {%- set byte_order_str = formatByteOrderEncoding(type.primitive_type) %}
+    SBE_NODISCARD {{ cpp_t }} {{ m_name | lower_first }}() const SBE_NOEXCEPT
+    {
+    {% if entry.since_version > 0 %}
+        if (m_actingVersion < {{ entry.since_version }})
+        {
+            return {{ type.null_value | replace_keyword }};
+        }
+    {% endif %}
+        {{ cpp_t }} val;
+        std::memcpy(&val, m_buffer + m_offset + {{ entry.offset }}, sizeof({{ cpp_t }}));
+        return {{ byte_order_str }}(val);
+    }
+
+    {{ c_name }} &{{ m_name | lower_first }}(const {{ cpp_t }} value) SBE_NOEXCEPT
+    {
+        {{ cpp_t }} val = {{ byte_order_str }}(value);
+        std::memcpy(m_buffer + m_offset + {{ entry.offset }}, &val, sizeof({{ cpp_t }}));
+        return *this;
+    }
+{%- endmacro %}
+
+{#
+    generateArrayProperty(...)
+#}
+
+{% macro arrayProperty(c_name, m_name, entry) %}
+    {%- set type = entry.type if entry.token == 'field' else entry %}
+    {%- set cpp_t = type.primitive_type.name | replace_keyword %}
+    static SBE_CONSTEXPR std::uint64_t {{ m_name | lower_first }}Length() SBE_NOEXCEPT
+    {
+        return {{ type.length }};
+    }
+
+    SBE_NODISCARD const char *{{ m_name | lower_first }}() const SBE_NOEXCEPT
+    {
+        // TODO: field not pressent condition
+        return m_buffer + m_offset + {{ entry.offset }};
+    }
+
+    SBE_NODISCARD char *{{ m_name | lower_first }}() SBE_NOEXCEPT
+    {
+        // TODO: field not pressent condition
+        return m_buffer + m_offset + {{ entry.offset }};
+    }
+
+    SBE_NODISCARD {{ cpp_t }} {{ m_name | lower_first }}(const std::uint64_t index) const
+    {
+        if (index >= {{ type.length }})
+        {
+        }
+    }
+{%- endmacro %}
+
+{#
+    generateEnumProperty(...)
+#}
+
+{% macro enumProperty(c_name, m_name, entry) %}
+{%- endmacro %}
+
+{#
+    generateBitsetProperty(...)
+#}
+
+{% macro bitsetProperty(c_name, m_name, entry) %}
+{%- endmacro %}
+
+{#
+    generateCompositeProperty(...)
+#}
+
+{% macro compositeProperty(c_name, m_name, entry) %}
+{%- endmacro %}
+
+{#
+    generatePrimitiveFieldMetaData(...)
+#}
+
+{% macro primitiveFieldMetaData(c_name, m_name, entry) %}
+    {%- set type = entry.type if entry.token == 'field' else entry %}
+    {%- set cpp_t = type.primitive_type.name | replace_keyword %}
+    static SBE_CONSTEXPR {{ cpp_t }} {{ m_name | lower_first }}NullValue() SBE_NOEXCEPT
+    {
+        return {{ type.null_value | replace_keyword }};
+    }
+
+    static SBE_CONSTEXPR {{ cpp_t }} {{ m_name | lower_first }}MinValue() SBE_NOEXCEPT
+    {
+        return {{ type.min_value | replace_keyword }};
+    }
+
+    static SBE_CONSTEXPR {{ cpp_t }} {{ m_name | lower_first }}MaxValue() SBE_NOEXCEPT
+    {
+        return {{ type.max_value | replace_keyword }};
+    }
+
+    static SBE_CONSTEXPR std::size_t {{ m_name | lower_first }}EncodingLength() SBE_NOEXCEPT
+    {
+        return {{ type.encoded_length }};
+    }
+{%- endmacro %}
+
+
+
+
+
+
+{# --------------------------------------------------------------------------- #}
+
+{% macro fixed_flyweight_data(c_name) %}
+    {%- set block_length_cpp_t = schema.utils.block_length.primitive_type.name | replace_keyword %}
+    {%- set template_id_cpp_t = schema.utils.template_id.primitive_type.name | replace_keyword %}
+    {%- set schema_id_cpp_t = schema.utils.schema_id.primitive_type.name | replace_keyword %}
+    {%- set version_cpp_t = schema.utils.version.primitive_type.name | replace_keyword %}
+private:
+    char* buffer_ = nullptr;
+    std::size_t bufferLength_ = 0;
+    std::size_t offset_ = 0;
+    {{ version_cpp_t }} actingVersion_ = 0;
+
+public:
+    {{ c_name }}() = default;
+
+    {{ c_name }}(char* buffer, std::size_t offset, std::size_t bufferLength, {{ version_cpp_t }} actingVersion)
+        : buffer_{buffer}
+        , bufferLength_{bufferLength}
+        , offset_{offset}
+        , actingVersion_{actingVersion}
+    {
+        if ((offset_ + this->encodedLength()) > bufferLength_) [[unlikely]]
+        {
+            throw std::runtime_error("buffer too short for flyweight {{ c_name }} [E107]");
+        }
+    }
+
+    {{ c_name }}(char* buffer, std::size_t bufferLength, {{ version_cpp_t }} actingVersion)
+        : {{ c_name }}{buffer, 0, bufferLength, actingVersion}
+    {
+    }
+
+    {{ c_name }}(char* buffer, std::size_t bufferLength)
+        : {{ c_name }}{buffer, 0, bufferLength, sbeSchemaVersion()}
+    {
+    }
+
+    {{ c_name}}& wrap(char* buffer, std::size_t offset, {{ version_cpp_t }} actingVersion, std::size_t bufferLength)
+    {
+        *this = {{ c_name }}(buffer, offset, bufferLength, actingVersion);
+        return *this;
+    }
+
+    [[nodiscard]] static constexpr std::size_t encodedLength() noexcept
+    {
+        return {{ type.encoded_length }};
+    }
+
+    [[nodiscard]] std::size_t offset() const noexcept
+    {
+        return offset_;
+    }
+
+    [[nodiscard]] char const* buffer() const noexcept
+    {
+        return buffer_;
+    }
+
+    [[nodiscard]] char* buffer() noexcept
+    {
+        return buffer_;
+    }
+
+    [[nodiscard]] std::size_t bufferLength() const noexcept
+    {
+        return bufferLength_;
+    }
+
+    [[nodiscard]] {{ version_cpp_t }} actingVersion() const noexcept
+    {
+        return actingVersion_;
+    }
+
+    [[nodiscard]] static constexpr {{ schema_id_cpp_t }} sbeSchemaId() noexcept
+    {
+        return {{ schema.id }};
+    }
+
+    [[nodiscard]] static constexpr {{ version_cpp_t }} sbeSchemaVersion() noexcept
+    {
+        return {{ schema.version }};
+    }
+{% endmacro %}
+
+{# --------------------------------------------------------------------------- #}
+
+{% macro composite_properties(c_name, contained_types) %}
+    {% for entry in contained_types %}
+        {%- set m_name = entry.reference_name if 'reference_name' in entry else entry.name %}
+    // ---------------------------------------------------------------
+    // Type: "{{ m_name }}"
+    // ---------------------------------------------------------------
+        {% if entry.token == 'type' %}
+
+{{ property_primitive(c_name, m_name, entry) }}
+        {% elif entry.token == 'enum' %}
+
+{{ property_enum(c_name, m_name, entry) }}
+        {% elif entry.token == 'set' %}
+
+{{ property_set(c_name, m_name, entry) }}
+        {% elif entry.token == 'composite' %}
+
+{{ property_composite(c_name, m_name, entry) }}
+        {% endif %}
+    {% endfor %}
+{% endmacro %}
+
+{# --------------------------------------------------------------------------- #}
+
+{% macro property_primitive(c_name, m_name, entry) %}
+    {%- set type = entry.type if entry.token == 'field' else entry %}
+    {%- set cpp_t = type.primitive_type.name | replace_keyword %}
+    [[nodiscard]] static constexpr std::uint64_t {{ m_name | lower_first }}Id() noexcept
+    {
+        return std::uint64_t({{ entry.id or -1 }});
+    }
+
+    [[nodiscard]] static constexpr {{ cpp_t }} {{ m_name | lower_first }}NullValue() noexcept
+    {
+        return {{ type.null_value | replace_keyword }};
+    }
+
+    [[nodiscard]] static constexpr {{ cpp_t }} {{ m_name | lower_first }}MinValue() noexcept
+    {
+        return {{ type.min_value | replace_keyword }};
+    }
+
+    [[nodiscard]] static constexpr {{ cpp_t }} {{ m_name | lower_first }}MaxValue() noexcept
+    {
+        return {{ type.min_value | replace_keyword }};
+    }
+
+    [[nodiscard]] static constexpr std::size_t {{ m_name | lower_first }}EncodingLength() noexcept
+    {
+        return {{ type.encoded_length }};
+    }
+    {% if type.length == 1 %}
+
+{{ property_primitive_1(c_name, m_name, entry) }}
+    {% elif type.length > 1 %}
+
+{{ property_primitive_N(c_name, m_name, entry) }}
+    {% endif %}
+{% endmacro %}
+
+{% macro property_primitive_1(c_name, m_name, entry) %}
+    {%- set type = entry.type if entry.token == 'field' else entry %}
+    {%- set cpp_t = type.primitive_type.name | replace_keyword %}
+    {% if entry.presence != 'constant' %}
+    [[nodiscard]] {{ cpp_t }} {{ m_name | lower_first }}() const noexcept
+    {
+        {{ cpp_t }} value;
+        std::memcpy(&value, buffer_ + offset_ + {{ entry.offset }}, sizeof(value));
+        // TODO: value endianess
+        return value;
+    }
+
+    {{ c_name }}& {{ m_name | lower_first }}({{ cpp_t }} value) noexcept
+    {
+        // TODO: value endianess
+        std::memcpy(buffer_ + offset_ + {{ entry.offset }}, &value, sizeof(value));
+        return *this;
+    }
+    {% else %}
+    [[nodiscard]] static constexpr {{ cpp_t }} {{ m_name | lower_first }}() noexcept
+    {
+        {# escape for non-char? #}
+        return {{ type.const_value | replace_keyword }};
+    }
+    {% endif %}
+{% endmacro %}
+
+{% macro property_primitive_N(c_name, m_name, entry) %}
+    {%- set type = entry.type if entry.token == 'field' else entry %}
+    {%- set cpp_t = type.primitive_type.name | replace_keyword %}
+    [[nodiscard]] static constexpr std::size_t {{ m_name | lower_first }}Length() noexcept
+    {
+        return {{ type.length }};
+    }
+
+    {% if entry.presence != 'constant' %}
+        {% if entry.primitive_type.name == 'char' %}
+    [[nodiscard]] char const* {{ m_name | lower_first }}() const noexcept
+    {
+        return buffer_ + offset_ + {{ entry.offset }};
+    }
+
+    [[nodiscard]] char* {{ m_name | lower_first }}() noexcept
+    {
+        return buffer_ + offset_ + {{ entry.offset }};
+    }
+
+    [[nodiscard]] char {{ m_name | lower_first }}(std::size_t index) const
+    {
+        if (index >= {{ type.length }}) [[unlikely]]
+        {
+            throw std::runtime_error("index of range for \"{{ m_name }}\" [E104]");
+        }
+        return this->{{ m_name | lower_first }}()[index];
+    }
+
+    {{ c_name }}& {{ m_name | lower_first }}(std::size_t index, char value)
+    {
+        if (index >= {{ type.length }}) [[unlikely]]
+        {
+            throw std::runtime_error("index of range for \"{{ m_name }}\" [E104]");
+        }
+        this->{{ m_name | lower_first }}()[index] = value;
+        return *this;
+    }
+
+    [[nodiscard]] std::size_t get{{ m_name | upper_first }}(char* dst, std::size_t length) const
+    {
+        if (length > {{ type.length }}) [[unlikely]]
+        {
+            throw std::runtime_error("length too large for \"{{ m_name }}\" [E106]");
+        }
+        std::memcpy(dst, buffer_ + offset_ + {{ entry.offset }}, length);
+        return length;
+    }
+
+    [[nodiscard]] std::string get{{ m_name | upper_first }}AsString() const
+    {
+        return std::string(this->get{{ m_name | upper_first }}AsStringView());
+    }
+
+    [[nodiscard]] std::string_view get{{ m_name | upper_first }}AsStringView() const noexcept
+    {
+        char const* buffer = buffer_ + offset_ + {{ entry.offset }};
+        std::size_t length = 0;
+        for (; length < {{ type.length }} && *(buffer + length) != '\0'; ++length);
+        return std::string_view(buffer, length);
+    }
+
+    {{ c_name }}& put{{ m_name | upper_first }}(std::string_view str)
+    {
+        if (str.length() > {{ type.length }}) [[unlikely]]
+        {
+            throw std::runtime_error("string too large for \"{{ m_name }}\" [E106]");
+        }
+        std::memcpy(buffer_ + offset_ + {{ entry.offset }}, str.data(), str.length());
+        for (std::size_t start = str.size(); start < {{ type.length }}; ++start)
+        {
+            this->{{ m_name | lower_first }}(start, '\0');
+        }
+        return *this;
+    }
+        {% else %}
+    // FIX ME
+        {% endif %}
+    {% else %}
+    {% endif %}
+{% endmacro %}
+
+{# --------------------------------------------------------------------------- #}
+
+{% macro property_enum(c_name, m_name, entry) %}
+    {%- set type = entry.type if entry.token == 'field' else entry %}
+    [[nodiscard]] static constexpr auto {{ m_name | lower_first }}Id() noexcept -> std::uint64_t
+    {
+        return std::uint64_t({{ entry.id or -1 }});
+    }
+{% endmacro %}
+
+{# --------------------------------------------------------------------------- #}
+
+{% macro property_set(c_name, m_name, entry) %}
+    {%- set type = entry.type if entry.token == 'field' else entry %}
+    [[nodiscard]] static constexpr auto {{ m_name | lower_first }}Id() noexcept -> std::uint64_t
+    {
+        return std::uint64_t({{ entry.id or -1 }});
+    }
+{% endmacro %}
+
+{# --------------------------------------------------------------------------- #}
+
+{% macro property_composite(c_name, m_name, entry) %}
+    {%- set type = entry.type if entry.token == 'field' else entry %}
+    [[nodiscard]] static constexpr auto {{ m_name | lower_first }}Id() noexcept -> std::uint64_t
+    {
+        return std::uint64_t({{ entry.id or -1 }});
+    }
+{% endmacro %}

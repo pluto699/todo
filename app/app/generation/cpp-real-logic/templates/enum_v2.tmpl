@@ -1,0 +1,111 @@
+{% import 'generate.tmpl' as gen with context %}
+{% if schema.package != None %}
+    {% set namespace = schema.package | join('::') | replace(' ', '_') %}
+{% else %}
+    {% set namespace = 'sbe' %}
+{% endif %}
+{% set c_name = type.name | fmt_class_name %}
+{% set cpp_t = type.encoding_type.name | replace_keyword %}
+{% set decode_unknown_enums = false -%}
+
+// Generated Simple Binary Encoding message codec
+// https://github.com/ksergey/sbe-code-gen
+
+#pragma once
+
+#if !defined(__STDC_LIMIT_MACROS)
+#  define __STDC_LIMIT_MACROS 1
+#endif
+
+#include <cstdint>
+#include <iomanip>
+#include <limits>
+#include <ostream>
+#include <stdexcept>
+#include <sstream>
+#include <string>
+
+#define SBE_NULLVALUE_INT8 (std::numeric_limits<std::int8_t>::min)()
+#define SBE_NULLVALUE_INT16 (std::numeric_limits<std::int16_t>::min)()
+#define SBE_NULLVALUE_INT32 (std::numeric_limits<std::int32_t>::min)()
+#define SBE_NULLVALUE_INT64 (std::numeric_limits<std::int64_t>::min)()
+#define SBE_NULLVALUE_UINT8 (std::numeric_limits<std::uint8_t>::max)()
+#define SBE_NULLVALUE_UINT16 (std::numeric_limits<std::uint16_t>::max)()
+#define SBE_NULLVALUE_UINT32 (std::numeric_limits<std::uint32_t>::max)()
+#define SBE_NULLVALUE_UINT64 (std::numeric_limits<std::uint64_t>::max)()
+
+{% for str in schema.package %}
+namespace {{ str | replace(' ', '_') }} {
+{% endfor %}
+
+class {{ c_name }}
+{
+public:
+    {# generateEnumValues #}
+    enum Value
+    {
+{% for valid_value in type.valid_values %}
+    {% if type.encoding_type.name == 'char' %}
+        {{ valid_value.name }} = '{{ valid_value.value }}',
+    {% else %}
+        {{ valid_value.name }} = static_cast<{{ cpp_t }}>({{ valid_value.value | replace_keyword }}),
+    {% endif %}
+{% endfor %}
+{% if decode_unknown_enums %}
+        SBE_UNKNOWN = static_cast<{{ cpp_t }}>({{ type.null_value | replace_keyword }}),
+{% endif %}
+        NULL_VALUE = static_cast<{{ cpp_t }}>({{ type.null_value | replace_keyword }})
+    };
+
+    {# generateEnumLookupMethod #}
+    static {{ c_name }}::Value get(const {{ cpp_t }} value)
+    {
+        switch (value)
+        {
+{% for valid_value in type.valid_values %}
+    {% if type.encoding_type.name == 'char' %}
+            case '{{ valid_value.value }}': return {{ c_name }}::{{ valid_value.name }};
+    {% else %}
+            case static_cast<{{ cpp_t }}>({{ valid_value.value }}): return {{ valid_value.name }};
+    {% endif %}
+{% endfor %}
+            case static_cast<{{ cpp_t }}>({{ type.null_value | replace_keyword }}): return NULL_VALUE;
+        }
+
+{% if decode_unknown_enums %}
+        return SBE_UNKNOWN;
+{% else %}
+        throw std::runtime_error("unknown value for enum {{ c_name }} [E103]");
+{% endif %}
+    }
+
+    {# generateEnumDisplay #}
+    static const char *c_str(const {{ c_name }}::Value value)
+    {
+        switch (value)
+        {
+{% for valid_value in type.valid_values %}
+            case {{ valid_value.name }}: return "{{ valid_value.name }}";
+{% endfor %}
+            case NULL_VALUE: return "NULL_VALUE";
+        }
+
+{% if decode_unknown_enums %}
+        return "SBE_UNKNOWN";
+{% else %}
+        throw std::runtime_error("unknown value for enum {{ c_name }} [E103]");
+{% endif %}
+    }
+
+    {# generateEnumDisplay #}
+    template<typename CharT, typename Traits>
+    friend std::basic_ostream<CharT, Traits> & operator << (
+        std::basic_ostream<CharT, Traits> &os, {{ c_name }}::Value m)
+    {
+        return os << {{ c_name }}::c_str(m);
+    }
+};
+
+{% for str in schema.package %}
+}
+{% endfor %}
