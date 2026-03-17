@@ -71,7 +71,7 @@ consteval auto schemaByteOrder() noexcept -> ByteOrder {
 {% endif %}
 }
 
-template<typename T>
+template <typename T>
     requires std::is_arithmetic_v<T>
 constexpr void swapByteOrder(T& value) noexcept {
     if constexpr (schemaByteOrder() != hostByteOrder()) {
@@ -84,5 +84,82 @@ constexpr void swapByteOrder(T& value) noexcept {
         }
     }
 }
+
+template <typename... Ts>
+struct MP_List {};
+
+template <std::size_t N>
+using MP_SizeT = std::integral_constant<std::size_t, N>;
+
+namespace detail {
+
+template <typename L, typename I>
+struct MP_AtImpl;
+
+template <template <typename...> typename L, typename... T, typename I>
+struct MP_AtImpl<L<T...>, I> {
+    using type = typename std::tuple_element<I::value, std::tuple<T...>>::type;
+};
+
+}  // namespace detail
+
+template <typename L, typename I>
+using MP_At = typename detail::MP_AtImpl<L, I>::type;
+
+namespace detail {
+
+template <typename L>
+struct MP_SizeImpl;
+
+template <template<typename...> typename L, typename... T>
+struct MP_SizeImpl<L<T...>> {
+    using type = MP_SizeT<sizeof...(T)>;
+};
+
+} // namespace detail
+
+template <typename L>
+using MP_Size = typename detail::MP_SizeImpl<L>::type;
+
+namespace detail {
+
+template <typename L, typename M>
+struct MP_FindImpl;
+
+template <template <typename...> typename L, typename... T, typename M>
+struct MP_FindImpl<L<T...>, M> {
+    using type = MP_SizeT<[] -> std::size_t {
+        // matched array
+        constexpr auto match = std::array{M::template fn<T>::value...};
+        std::size_t index = 0;
+        for (; index < sizeof...(T); ++index) {
+            if (match[index]) {
+                break;
+            }
+        }
+        return index;
+    }()>;
+};
+
+} // namespace detail
+
+template <typename L, typename M>
+using MP_Find = typename detail::MP_FindImpl<L, M>::type;
+
+template <typename M>
+struct MatchType{
+    template <typename T>
+    struct fn {
+        static constexpr auto value = std::is_same_v<M, T>;
+    };
+};
+
+template <CtString N>
+struct MatchSbeFieldName {
+    template <typename T>
+    struct fn {
+        static constexpr auto value = (static_cast<std::string_view>(N) == T::sbeFieldName());
+    };
+};
 
 {% endblock %}
