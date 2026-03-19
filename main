@@ -1,0 +1,72 @@
+#include <iostream>
+#include <array>
+#include <tuple>
+
+#include "vtrade/SequenceReset_1.h"
+#include "vtrade/Sequence_2.h"
+#include "vtrade/SecurityStatus_3.h"
+#include "vtrade/SecurityDefinition_4.h"
+#include "vtrade/News_5.h"
+#include "vtrade/IncrementalRefresh_EmptyBook_9.h"
+#include "vtrade/IncrementalRefresh_OpeningPrice_15.h"
+#include "vtrade/IncrementalRefresh_TheoreticalOpeningPrice_16.h"
+#include "vtrade/SnapshotFullRefresh_Orders_MBO_71.h"
+
+struct MessagePrinter {
+    template <typename FieldT>
+        requires (requires { std::declval<FieldT>().value(); })
+    static void print(std::ostream& os, FieldT field, std::string_view prefix = {}) {
+        if (!prefix.empty()) {
+            os << prefix << '.';
+        }
+        os << field.sbeRefName() << ": ";
+        if (field.present()) {
+            os << field.value();
+        } else {
+            os << "N/A";
+        }
+        os << '\n';
+    }
+
+    template <typename AggrT>
+        requires (requires { typename AggrT::Fields; })
+    static void print(std::ostream& os, AggrT aggr, std::string_view parent = {}) {
+        std::string prefix{parent};
+        if constexpr (requires { aggr.sbeRefName(); }) {
+            prefix.append(".").append(aggr.sbeRefName());
+        }
+
+        [&]<template<typename...> typename L, typename... Ts>(L<Ts...>) {
+            [&]<std::size_t... I>(std::index_sequence<I...>) {
+                (MessagePrinter::print(os, aggr.template get<I>(), prefix), ...);
+            }(std::make_index_sequence<sizeof...(Ts)>{});
+        }(typename AggrT::Fields{});
+    }
+};
+
+void test3() {
+    using namespace b3::marketdata::umdf::sbe;
+
+    std::array<std::byte, 64> buffer = {std::byte(0)};
+
+    // auto sequenceReset = SequenceReset_1::wrapAndApplyHeader(buffer);
+    // std::cout << "messageType: " << sequenceReset.get<"messageType">().value() << '\n';
+    // std::cout << "applVerID: " << sequenceReset.get<"applVerID">().value() << '\n';
+    // std::cout << "newSeqNo: " << sequenceReset.get<"newSeqNo">().value() << '\n';
+    // std::cout << "---\n";
+
+    MessagePrinter::print(std::cout, SequenceReset_1{buffer}, "SequenceReset_1");
+    std::cout << "---\n";
+    MessagePrinter::print(std::cout, SecurityStatus_3{buffer}, "SecurityStatus_3");
+    std::cout << "---\n";
+}
+
+int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
+    try {
+        test3();
+    } catch (std::exception const& e) {
+        std::cerr << "ERROR: " << e.what() << '\n';
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}

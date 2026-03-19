@@ -145,7 +145,7 @@ static_assert(sizeof({{ class_cpp_t }}) == {{ type.encoded_length }});
 {% set class_cpp_t = type.name | fmt_class_type %}
 class {{ class_cpp_t }} {
 private:
-    std::byte* buffer_{nullptr};
+    std::byte* bufferPtr_{nullptr};
     {{ version_cpp_t }} actingVersion_{ {{- schema.version }}};
 
 public:
@@ -163,8 +163,8 @@ public:
 {% endfor %}
     constexpr {{ class_cpp_t }}() = default;
 
-    constexpr {{ class_cpp_t }}(std::byte* buffer, {{ version_cpp_t }} actingVersion = {{ schema.version }}) noexcept
-        : buffer_{buffer}
+    constexpr {{ class_cpp_t }}(std::byte* bufferPtr, {{ version_cpp_t }} actingVersion = {{ schema.version }}) noexcept
+        : bufferPtr_{bufferPtr}
         , actingVersion_{actingVersion}
     {}
 
@@ -227,7 +227,7 @@ public:
     {% else %}
         } else if constexpr (I == {{ loop.index0 }}) {
     {% endif %}
-            return {{ contained_type_ref_name }}{buffer_, actingVersion_};
+            return {{ contained_type_ref_name }}{bufferPtr_, actingVersion_};
 {% endfor %}
         } else {
             static_assert(I < 0, "Field index out of range ({{ class_cpp_t }})");
@@ -244,7 +244,7 @@ public:
     {% else %}
         } else if constexpr (name == {{ contained_type_ref_name }}::sbeRefName()) {
     {% endif %}
-            return {{ contained_type_ref_name }}{buffer_, actingVersion_};
+            return {{ contained_type_ref_name }}{bufferPtr_, actingVersion_};
 {% endfor %}
         } else {
             static_assert(name.size() + 1 < 0, "Field not found ({{ class_cpp_t }})");
@@ -259,8 +259,7 @@ public:
 {% set class_cpp_t = message.name | fmt_class_message %}
 class {{ class_cpp_t }} {
 private:
-    std::byte* buffer_{nullptr};
-    std::size_t bufferSize_{0};
+    std::span<std::byte> buffer_;
     std::size_t offset_{0};
     std::size_t position_{0};
     {{ block_length_cpp_t }} actingBlockLength_{ {{- message.block_length }}};
@@ -269,43 +268,34 @@ private:
 public:
     constexpr {{ class_cpp_t }}() = default;
 
-    constexpr {{ class_cpp_t }}(std::byte* buffer, std::size_t bufferSize, std::size_t offset = 0, {{ block_length_cpp_t }} actingBlockLength = {{ message.block_length }}, {{ version_cpp_t }} actingVersion = {{ schema.version }})
+    constexpr {{ class_cpp_t }}(std::span<std::byte> buffer, std::size_t offset = 0, {{ block_length_cpp_t }} actingBlockLength = {{ message.block_length }}, {{ version_cpp_t }} actingVersion = {{ schema.version }})
         : buffer_{buffer}
-        , bufferSize_{bufferSize}
         , offset_{offset}
         , position_{offset + actingBlockLength}
         , actingBlockLength_{actingBlockLength}
         , actingVersion_{actingVersion}
     {
-        if (position_ > bufferSize_) [[unlikely]] {
+        if (position_ > buffer_.size()) [[unlikely]] {
           throw std::runtime_error{"not enought space for \"{{ class_cpp_t }}\""};
         }
     }
 
-    [[nodiscard]] static constexpr auto wrapAndApplyHeader(std::byte* buffer, std::size_t bufferSize, std::size_t offset = 0) -> {{ class_cpp_t }} {
+    [[nodiscard]] static constexpr auto wrapAndApplyHeader(std::span<std::byte> buffer, std::size_t offset = 0) -> {{ class_cpp_t }} {
         {% set message_header_cpp_t = messageHeader.name | fmt_class_type %}
-        if (offset + {{ messageHeader.encoded_length }} > bufferSize) [[unlikely]] {
+        if (offset + {{ messageHeader.encoded_length }} > buffer.size()) [[unlikely]] {
             throw std::runtime_error{"not enought space for \"{{ message_header_cpp_t }}\""};
         }
-        auto header = {{ message_header_cpp_t }}(buffer);
+        auto header = {{ message_header_cpp_t }}(buffer.data());
         header.get<"blockLength">().value({{ message.block_length }});
         header.get<"templateId">().value({{ message.id }});
         header.get<"schemaId">().value({{ schema.id }});
         header.get<"version">().value({{ schema.version }});
 
-        return {{ class_cpp_t }}(buffer, bufferSize, offset + {{ messageHeader.encoded_length }}, {{ message.block_length }}, {{ schema.version }});
+        return {{ class_cpp_t }}(buffer, offset + {{ messageHeader.encoded_length }}, {{ message.block_length }}, {{ schema.version }});
     }
 
-    [[nodiscard]] constexpr auto buffer() const noexcept -> std::byte const* {
+    [[nodiscard]] constexpr auto buffer() const noexcept -> std::span<std::byte> {
         return buffer_;
-    }
-
-    [[nodiscard]] constexpr auto buffer() noexcept -> std::byte* {
-        return buffer_;
-    }
-
-    [[nodiscard]] constexpr auto bufferSize() const noexcept -> std::size_t {
-        return bufferSize_;
     }
 
     [[nodiscard]] constexpr auto offset() const noexcept -> std::size_t {
@@ -411,11 +401,11 @@ public:
         } else if constexpr (I == {{ loop.index0 }}) {
     {% endif %}
     {% if field.token == 'field' %}
-            return {{ field_ref_name }}{buffer_ + offset_, actingVersion_};
+            return {{ field_ref_name }}{buffer_.data() + offset_, actingVersion_};
     {% elif field.token == 'group' %}
-            return {{ field_ref_name }}{buffer_, bufferSize_, &position_, actingVersion_};
+            return {{ field_ref_name }}{buffer_, &position_, actingVersion_};
     {% elif field.token == 'data' %}
-            return {{ field_ref_name }}{buffer_, bufferSize_, &position_, actingVersion_};
+            return {{ field_ref_name }}{buffer_, &position_, actingVersion_};
     {% endif %}
 {% endfor %}
         } else {
@@ -434,11 +424,11 @@ public:
         } else if constexpr (name == {{ field_ref_name }}::sbeRefName()) {
     {% endif %}
     {% if field.token == 'field' %}
-            return {{ field_ref_name }}{buffer_ + offset_, actingVersion_};
+            return {{ field_ref_name }}{buffer_.data() + offset_, actingVersion_};
     {% elif field.token == 'group' %}
-            return {{ field_ref_name }}{buffer_, bufferSize_, &position_, actingVersion_};
+            return {{ field_ref_name }}{buffer_, &position_, actingVersion_};
     {% elif field.token == 'data' %}
-            return {{ field_ref_name }}{buffer_, bufferSize_, &position_, actingVersion_};
+            return {{ field_ref_name }}{buffer_, &position_, actingVersion_};
     {% endif %}
 {% endfor %}
         } else {
@@ -458,8 +448,7 @@ public:
 {% set num_in_group_cpp_t = numInGroup.primitive_type.name | replace_keyword %}
 class {{ class_cpp_t }} {
 private:
-    std::byte* buffer_{nullptr};
-    std::size_t bufferSize_{0};
+    std::span<std::byte> buffer_;
     std::size_t initialPosition_{0};
     std::size_t* positionPtr_{nullptr};
     {{ block_length_cpp_t }} actingBlockLength_{ {{- group.block_length }}};
@@ -469,17 +458,16 @@ private:
     std::size_t offset_{0};
 
 public:
-    constexpr {{ class_cpp_t }}(std::byte* buffer, std::size_t bufferSize, std::size_t* positionPtr, {{ version_cpp_t }} actingVersion = {{ schema.version }})
+    constexpr {{ class_cpp_t }}(std::span<std::byte> buffer, std::size_t* positionPtr, {{ version_cpp_t }} actingVersion = {{ schema.version }})
         : buffer_{buffer}
-        , bufferSize_{bufferSize}
         , initialPosition_{*positionPtr}
         , positionPtr_{positionPtr}
         , actingVersion_{actingVersion}
     {
-        if (*positionPtr_ + {{ dimension.encoded_length }} > bufferSize_) {
+        if (*positionPtr_ + {{ dimension.encoded_length }} > buffer_.size()) {
           throw std::runtime_error{"not enought space for \"{{ dimension_cpp_t }}\""};
         }
-        auto const dimension = {{ dimension_cpp_t }}(buffer_ + *positionPtr_);
+        auto const dimension = {{ dimension_cpp_t }}(buffer_.data() + *positionPtr_);
         actingBlockLength_ = dimension.get<"blockLength">().value();
         count_ = dimension.get<"numInGroup">().value();
         *positionPtr_ = *positionPtr_ + {{ dimension.encoded_length }};
@@ -509,7 +497,7 @@ public:
         index_ = 0;
         actingBlockLength_ = {{ group.block_length }};
 
-        auto dimension = {{ dimension_cpp_t }}(buffer_ + *positionPtr_);
+        auto dimension = {{ dimension_cpp_t }}(buffer_.data() + *positionPtr_);
         dimension.get<"blockLength">().value({{ group.block_length }});
         dimension.get<"numInGroup">().value(count_);
 
@@ -527,7 +515,7 @@ public:
             throw std::runtime_error{"index out of allowed range for group \"{{ class_cpp_t }}\""};
         }
         offset_ = *positionPtr_;
-        if ((offset_ + actingBlockLength_) > bufferSize_) [[unlikely]] {
+        if ((offset_ + actingBlockLength_) > buffer_.size()) [[unlikely]] {
             throw std::runtime_error{"not enought space for next entry for group \"{{ class_cpp_t }}\""};
         }
         *positionPtr_ = offset_ + actingBlockLength_;
@@ -598,11 +586,11 @@ public:
         } else if constexpr (I == {{ loop.index0 }}) {
     {% endif %}
     {% if field.token == 'field' %}
-            return {{ field_ref_name }}{buffer_ + offset_, actingVersion_};
+            return {{ field_ref_name }}{buffer_.data() + offset_, actingVersion_};
     {% elif field.token == 'group' %}
-            return {{ field_ref_name }}{buffer_, bufferSize_, positionPtr_, actingVersion_};
+            return {{ field_ref_name }}{buffer_, positionPtr_, actingVersion_};
     {% elif field.token == 'data' %}
-            return {{ field_ref_name }}{buffer_, bufferSize_, positionPtr_, actingVersion_};
+            return {{ field_ref_name }}{buffer_, positionPtr_, actingVersion_};
     {% endif %}
 {% endfor %}
         } else {
@@ -621,11 +609,11 @@ public:
         } else if constexpr (name == {{ field_ref_name }}::sbeRefName()) {
     {% endif %}
     {% if field.token == 'field' %}
-            return {{ field_ref_name }}{buffer_ + offset_, actingVersion_};
+            return {{ field_ref_name }}{buffer_.data() + offset_, actingVersion_};
     {% elif field.token == 'group' %}
-            return {{ field_ref_name }}{buffer_, bufferSize_, positionPtr_, actingVersion_};
+            return {{ field_ref_name }}{buffer_, positionPtr_, actingVersion_};
     {% elif field.token == 'data' %}
-            return {{ field_ref_name }}{buffer_, bufferSize_, positionPtr_, actingVersion_};
+            return {{ field_ref_name }}{buffer_, positionPtr_, actingVersion_};
     {% endif %}
 {% endfor %}
         } else {
@@ -651,21 +639,19 @@ public:
 {% set length_cpp_t = length.primitive_type.name | replace_keyword %}
 class {{ class_cpp_t }} {
 private:
-    std::byte* buffer_{nullptr};
-    std::size_t bufferSize_{0};
+    std::span<std::byte> buffer_;
     std::size_t initialPosition_{0};
     std::size_t* positionPtr_{nullptr};
     {{ version_cpp_t }} actingVersion_{ {{- schema.version }}};
 
 public:
-    constexpr {{ class_cpp_t }}(std::byte* buffer, std::size_t bufferSize, std::size_t* positionPtr, {{ version_cpp_t }} actingVersion = {{ schema.version }})
+    constexpr {{ class_cpp_t }}(std::span<std::byte> buffer, std::size_t* positionPtr, {{ version_cpp_t }} actingVersion = {{ schema.version }})
         : buffer_{buffer}
-        , bufferSize_{bufferSize}
         , initialPosition_{*positionPtr}
         , positionPtr_{positionPtr}
         , actingVersion_{actingVersion}
     {
-        if (*positionPtr_ + {{ length.encoded_length }} > bufferSize_) {
+        if (*positionPtr_ + {{ length.encoded_length }} > buffer_.size()) {
           throw std::runtime_error{"not enought space for \"{{ class_cpp_t }}\""};
         }
     }
@@ -675,14 +661,14 @@ public:
     }
 
     [[nodiscard]] constexpr auto value() -> {{ value_cpp_t }} {
-        auto const length = *std::bit_cast<{{ length_cpp_t }} const*>(buffer_ + initialPosition_);
-        auto const data = std::bit_cast<{{ enc_cpp_t }} const*>(buffer_ + initialPosition_ + {{ length.encoded_length }});
+        auto const length = *std::bit_cast<{{ length_cpp_t }} const*>(buffer_.data() + initialPosition_);
+        auto const data = std::bit_cast<{{ enc_cpp_t }} const*>(buffer_.data() + initialPosition_ + {{ length.encoded_length }});
 {% if varData.primitive_type.size == 1 %}
         auto const position = initialPosition_ + {{ length.encoded_length }} + length;
 {% else %}
         auto const position = initialPosition_ + {{ length.encoded_length }} + length * {{ varData.primitive_type.size }};
 {% endif %}
-        if (position > bufferSize_) [[unlikely]] {
+        if (position > buffer_.size()) [[unlikely]] {
             throw std::runtime_error{"not enought space for \"{{ class_cpp_t }}\""};
         }
         *positionPtr_ = position;
@@ -690,14 +676,14 @@ public:
     }
 
     constexpr auto value({{ value_cpp_t }} val) -> {{ class_cpp_t }}& {
-        *std::bit_cast<{{ length_cpp_t }}*>(buffer_ + initialPosition_) = val.size();
-        auto data = std::bit_cast<{{ enc_cpp_t }}*>(buffer_ + initialPosition_ + {{ length.encoded_length }});
+        *std::bit_cast<{{ length_cpp_t }}*>(buffer_.data() + initialPosition_) = val.size();
+        auto data = std::bit_cast<{{ enc_cpp_t }}*>(buffer_.data() + initialPosition_ + {{ length.encoded_length }});
 {% if varData.primitive_type.size == 1 %}
         auto const position = initialPosition_ + {{ length.encoded_length }} + val.size();
 {% else %}
         auto const position = initialPosition_ + {{ length.encoded_length }} + val.size() * {{ varData.primitive_type.size }};
 {% endif %}
-        if (position > bufferSize_) [[unlikely]] {
+        if (position > buffer_.size()) [[unlikely]] {
             throw std::runtime_error{"not enought space for \"{{ class_cpp_t }}\""};
         }
         std::copy_n(val.data(), val.size(), data);
@@ -730,11 +716,11 @@ struct {{ class_cpp_t }} {
     using value_type = {{ value_cpp_t }};
 {% if is_required or is_optional %}
 
-    std::byte* buffer = nullptr;
+    std::byte* bufferPtr = nullptr;
 
     {# constructor #}
-    constexpr {{ class_cpp_t }}(std::byte* blockBuffer, [[maybe_unused]] {{ version_cpp_t }} actingVersion = {{ schema.version }}) noexcept
-        : buffer{blockBuffer + {{ entry.offset }}}
+    constexpr {{ class_cpp_t }}(std::byte* blockBufferPtr, [[maybe_unused]] {{ version_cpp_t }} actingVersion = {{ schema.version }}) noexcept
+        : bufferPtr{blockBufferPtr + {{ entry.offset }}}
     {}
 {% elif is_constant %}
 
@@ -781,12 +767,12 @@ struct {{ class_cpp_t }} {
 
     {# data() #}
     [[nodiscard]] constexpr auto data() const noexcept -> {{ enc_cpp_t }} const* {
-        return std::bit_cast<{{ enc_cpp_t }} const*>(buffer);
+        return std::bit_cast<{{ enc_cpp_t }} const*>(bufferPtr);
     }
 
     {# data() #}
     [[nodiscard]] constexpr auto data() noexcept -> {{ enc_cpp_t }}* {
-        return std::bit_cast<{{ enc_cpp_t }}*>(buffer);
+        return std::bit_cast<{{ enc_cpp_t }}*>(bufferPtr);
     }
 
     {# data0() #}
@@ -833,7 +819,7 @@ struct {{ class_cpp_t }} {
     {% elif type.primitive_type.name == 'double' and type.null_value == 'DOUBLE_NULL' %}
         return !std::isnan(*this->data0());
     {% else %}
-        return this->data0() != this->nullValue();
+        return this->data0() != {{ enc_cpp_t }}({{ type.null_value | replace_keyword }});
     {% endif %}
     }
 {% endif %}
@@ -914,7 +900,7 @@ struct {{ class_cpp_t }} {
 
     {# reset() #}
     constexpr auto reset() noexcept -> {{ class_cpp_t }}& {
-        *this->data() = *this->nullValue();
+        *this->data() = {{ enc_cpp_t }}({{ type.null_value | replace_keyword }});
         return *this;
     }
 {% endif %}
@@ -936,16 +922,16 @@ struct {{ class_cpp_t }} {
     using value_type = {{ value_cpp_t }};
 {% if is_required or is_optional %}
 
-    std::byte* buffer = nullptr;
+    std::byte* bufferPtr = nullptr;
 
     {# constructor #}
-    constexpr {{ class_cpp_t }}(std::byte* blockBuffer, [[maybe_unused]] {{ version_cpp_t }} actingVersion = {{ schema.version }}) noexcept
-        : buffer{blockBuffer + {{ entry.offset }}}
+    constexpr {{ class_cpp_t }}(std::byte* blockBufferPtr, [[maybe_unused]] {{ version_cpp_t }} actingVersion = {{ schema.version }}) noexcept
+        : bufferPtr{blockBufferPtr + {{ entry.offset }}}
     {}
 {% elif is_constant %}
 
     {# constructor #}
-    constexpr {{ class_cpp_t }}([[maybe_unused]] std::byte* blockBuffer, [[maybe_unused]] {{ version_cpp_t }} actingVersion = {{ schema.version }}) noexcept
+    constexpr {{ class_cpp_t }}([[maybe_unused]] std::byte* blockBufferPtr, [[maybe_unused]] {{ version_cpp_t }} actingVersion = {{ schema.version }}) noexcept
     {}
 {% endif %}
 
@@ -964,12 +950,12 @@ struct {{ class_cpp_t }} {
 
     {# data() #}
     [[nodiscard]] constexpr auto data() const noexcept -> {{ enc_cpp_t }} const* {
-        return std::bit_cast<{{ enc_cpp_t }} const*>(buffer);
+        return std::bit_cast<{{ enc_cpp_t }} const*>(bufferPtr);
     }
 
     {# data() #}
     [[nodiscard]] constexpr auto data() noexcept -> {{ enc_cpp_t }}* {
-        return std::bit_cast<{{ enc_cpp_t }}*>(buffer);
+        return std::bit_cast<{{ enc_cpp_t }}*>(bufferPtr);
     }
 
     {# data0() #}
@@ -1001,7 +987,7 @@ struct {{ class_cpp_t }} {
 
     {# present() #}
     [[nodiscard]] constexpr auto present() const noexcept -> bool {
-        return static_cast<{{ value_cpp_t }}>(this->data0()) != {{ value_cpp_t }}::NULL_VALUE;
+        return static_cast<{{ value_cpp_t }}>(this->data0()) != {{ value_cpp_t }}::SBE_NULL;
     }
 {% endif %}
 
@@ -1037,7 +1023,7 @@ struct {{ class_cpp_t }} {
 
     {# reset() #}
     constexpr auto reset() noexcept -> {{ class_cpp_t }}& {
-        return this->value({{ value_cpp_t }}::NULL_VALUE);
+        return this->value({{ value_cpp_t }}::SBE_NULL);
     }
 {% endif %}
 };
@@ -1054,11 +1040,11 @@ struct {{ class_cpp_t }} {
 struct {{ class_cpp_t }} {
     using value_type = {{ value_cpp_t }};
 
-    std::byte* buffer = nullptr;
+    std::byte* bufferPtr = nullptr;
 
     {# constructor #}
-    constexpr {{ class_cpp_t }}(std::byte* blockBuffer, [[maybe_unused]] {{ version_cpp_t }} actingVersion = {{ schema.version }}) noexcept
-        : buffer{blockBuffer + {{ entry.offset }}}
+    constexpr {{ class_cpp_t }}(std::byte* blockBufferPtr, [[maybe_unused]] {{ version_cpp_t }} actingVersion = {{ schema.version }}) noexcept
+        : bufferPtr{blockBufferPtr + {{ entry.offset }}}
     {}
 
     [[nodiscard]] static constexpr auto sbeRefName() noexcept -> char const* {
@@ -1075,12 +1061,12 @@ struct {{ class_cpp_t }} {
 
     {# data() #}
     [[nodiscard]] constexpr auto data() const noexcept -> {{ enc_cpp_t }} const* {
-        return std::bit_cast<{{ enc_cpp_t }} const*>(buffer);
+        return std::bit_cast<{{ enc_cpp_t }} const*>(bufferPtr);
     }
 
     {# data() #}
     [[nodiscard]] constexpr auto data() noexcept -> {{ enc_cpp_t }}* {
-        return std::bit_cast<{{ enc_cpp_t }}*>(buffer);
+        return std::bit_cast<{{ enc_cpp_t }}*>(bufferPtr);
     }
 
     {# data0() #}
@@ -1131,7 +1117,7 @@ struct {{ class_cpp_t }} {
 struct {{ class_cpp_t }} : public {{ value_cpp_t }} {
     using value_type = {{ value_cpp_t }};
 
-    std::byte* buffer = nullptr;
+    std::byte* bufferPtr = nullptr;
 
     {# constructor (required, optional) #}
     constexpr {{ class_cpp_t }}(std::byte* blockBuffer, [[maybe_unused]] {{ version_cpp_t }} actingVersion = {{ schema.version }}) noexcept
