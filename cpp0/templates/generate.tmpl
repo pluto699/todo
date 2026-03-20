@@ -11,6 +11,24 @@
 
 {# ------------------------------------ #}
 
+{% macro meta_decl() %}
+template <std::size_t N>
+struct CtStr {
+    char data[N];
+    consteval CtStr(char const* str) noexcept {
+        std::copy_n(str, N, data);
+    }
+    [[nodiscard]] constexpr operator std::string_view() const noexcept {
+        return std::string_view(data, N - 1);
+    }
+};
+template <std::size_t N>
+CtStr(char const (&)[N]) -> CtStr<N>;
+
+template <typename... T>
+struct TypeList {};
+{%- endmacro %}
+
 {% macro swap_byte_order(val, size) %}
 {% if schema.byte_order == 'littleEndian' %}
 if constexpr (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__) {
@@ -195,23 +213,9 @@ public:
     {% endif %}
 {% endfor %}
 
-    template <std::size_t N>
-    struct CtString {
-        std::array<char, N> data{};
-        consteval CtString(char const* str) noexcept {
-            std::copy_n(str, N, data.begin());
-        }
-        [[nodiscard]] constexpr operator std::string_view() const noexcept {
-            return std::string_view(data.data(), data.size() - 1);
-        }
-    };
-    template <std::size_t N>
-    CtString(char const (&)[N]) -> CtString<N>;
+    {{ meta_decl() | indent(4) }}
 
-    template <typename... T>
-    struct List {};
-
-    using Fields = List<
+    using Fields = TypeList<
 {% for contained_type in type.contained_types %}
     {% set contained_type_ref_name = contained_type.reference_name | fmt_class_ref %}
         {{ contained_type_ref_name }}{% if not loop.last %},{% endif +%}
@@ -234,7 +238,7 @@ public:
         }
     }
 
-    template <CtString N>
+    template <CtStr N>
     [[nodiscard]] constexpr auto get() const noexcept {
         constexpr auto name = static_cast<std::string_view>(N);
 {% for contained_type in type.contained_types %}
@@ -368,23 +372,9 @@ public:
     {% endif %}
 {% endfor %}
 
-    template <std::size_t N>
-    struct CtString {
-        std::array<char, N> data{};
-        consteval CtString(char const* str) noexcept {
-            std::copy_n(str, N, data.begin());
-        }
-        [[nodiscard]] constexpr operator std::string_view() const noexcept {
-            return std::string_view(data.data(), data.size() - 1);
-        }
-    };
-    template <std::size_t N>
-    CtString(char const (&)[N]) -> CtString<N>;
+    {{ meta_decl() | indent(4) }}
 
-    template <typename... T>
-    struct List {};
-
-    using Fields = List<
+    using Fields = TypeList<
 {% for field in message.fields %}
     {% set field_ref_name = field.name | fmt_class_ref %}
         {{ field_ref_name }}{% if not loop.last %},{% endif +%}
@@ -413,7 +403,7 @@ public:
         }
     }
 
-    template <CtString N>
+    template <CtStr N>
     [[nodiscard]] constexpr auto get() noexcept {
         constexpr auto name = static_cast<std::string_view>(N);
 {% for field in message.fields %}
@@ -553,23 +543,9 @@ public:
     {% endif %}
 {% endfor %}
 
-    template <std::size_t N>
-    struct CtString {
-        std::array<char, N> data{};
-        consteval CtString(char const* str) noexcept {
-            std::copy_n(str, N, data.begin());
-        }
-        [[nodiscard]] constexpr operator std::string_view() const noexcept {
-            return std::string_view(data.data(), data.size() - 1);
-        }
-    };
-    template <std::size_t N>
-    CtString(char const (&)[N]) -> CtString<N>;
+    {{ meta_decl() | indent(4) }}
 
-    template <typename... T>
-    struct List {};
-
-    using Fields = List<
+    using Fields = TypeList<
 {% for field in group.fields %}
     {% set field_ref_name = field.name | fmt_class_ref %}
         {{ field_ref_name }}{% if not loop.last %},{% endif +%}
@@ -598,7 +574,7 @@ public:
         }
     }
 
-    template <CtString N>
+    template <CtStr N>
     [[nodiscard]] constexpr auto get() noexcept {
         constexpr auto name = static_cast<std::string_view>(N);
 {% for field in group.fields %}
@@ -823,11 +799,6 @@ struct {{ class_cpp_t }} {
     {% endif %}
     }
 {% endif %}
-
-    {# absent() #}
-    [[nodiscard]] constexpr auto absent() const noexcept -> bool {
-        return !this->present();
-    }
 {% if (is_required or is_optional) and type.length == 1 %}
 
     {# value() #}
@@ -990,11 +961,6 @@ struct {{ class_cpp_t }} {
         return static_cast<{{ value_cpp_t }}>(this->data0()) != {{ value_cpp_t }}::SBE_NULL;
     }
 {% endif %}
-
-    {# absent() #}
-    [[nodiscard]] constexpr auto absent() const noexcept -> bool {
-        return !this->present();
-    }
 {% if is_required or is_optional %}
 
     {# value() #}
@@ -1086,11 +1052,6 @@ struct {{ class_cpp_t }} {
         return true;
     }
 
-    {# absent() #}
-    [[nodiscard]] constexpr auto absent() const noexcept -> bool {
-        return !this->present();
-    }
-
     {# value() #}
     [[nodiscard]] constexpr auto value() const noexcept -> {{ value_cpp_t }} {
         return {{ value_cpp_t }}(this->data0());
@@ -1114,6 +1075,8 @@ struct {{ class_cpp_t }} {
 {% set ref_name = entry.name if entry.token == 'field' else entry.reference_name %}
 {% set class_cpp_t = ref_name | fmt_class_ref %}
 {% set value_cpp_t = type.name | fmt_class_type %}
+{% set mantissa = (type.contained_types | selectattr('name', 'equalto', 'mantissa') | first ) %}
+{% set exponent = (type.contained_types | selectattr('name', 'equalto', 'exponent') | first ) %}
 struct {{ class_cpp_t }} : public {{ value_cpp_t }} {
     using value_type = {{ value_cpp_t }};
 
@@ -1139,10 +1102,10 @@ struct {{ class_cpp_t }} : public {{ value_cpp_t }} {
     [[nodiscard]] constexpr auto present() const noexcept -> bool {
         return this->get<0>().present();
     }
+{% if mantissa and exponent %}
 
-    [[nodiscard]] constexpr auto absent() const noexcept -> bool {
-        return !this->present();
-    }
+    // TODO: convert to decimal/double/etc... ?
+{% endif %}
 };
 {%- endmacro %}
 
