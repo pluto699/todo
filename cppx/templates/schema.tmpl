@@ -36,6 +36,7 @@ namespace {{ generate.namespace }} {
 {% endfor %}
 
 } // namespace {{ generate.namespace }}
+{#
 {% for encoded_type in schema.types %}
     {% if encoded_type.token == 'enum' %}
 
@@ -48,3 +49,4 @@ namespace {{ generate.namespace }} {
 {{ generate.decl_composite_formatter(encoded_type) }}
     {% endif %}
 {% endfor %}
+#}
